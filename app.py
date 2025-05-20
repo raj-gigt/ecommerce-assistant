@@ -60,12 +60,15 @@ import json
 import os
 from werkzeug.datastructures import FileStorage
 from dotenv import load_dotenv # To load environment variables from .env
+import re
+from flask_cors import CORS  # Import the CORS extension
 
 # Load environment variables from .env file
 load_dotenv()
 
 # --- Flask App Setup ---
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # IMPORTANT: Set a secret key for session security
 # This is required for Flask sessions to work. Get it from environment variable or set a default (less secure)
@@ -96,6 +99,15 @@ generation_config = {
 # model instances might not be thread-safe, and chat history needs to be
 # managed per session/request in a web server context. We'll initialize
 # them inside the request handler.
+def clean_json_string(json_string: str) -> str:
+    # 1. Remove leading/trailing ```json and ```
+    cleaned = re.sub(r"^```json\s*|\s*```$", "", json_string.strip(), flags=re.MULTILINE)
+    
+    # 2. Parse to Python dict
+    data = json.loads(cleaned)
+    
+    # 3. Return pretty‑printed JSON (searchlink stays a plain URL string)
+    return json.dumps(data, indent=2)
 
 # --- Helper Function to prepare image for API from FileStorage ---
 def get_image_part_from_filestorage(file_storage: FileStorage):
@@ -128,7 +140,7 @@ You are an AI agent that recommends products on Amazon.in based on user input (i
 Your task is:
 1.  **Initial Input:** Analyze the provided image and any accompanying text. Identify the main product from the image and its key visual traits. Incorporate any specific requirements from the text input (like price range, brands) into the traits. Generate an Amazon.in search URL using the identified product and traits.
 2.  **Subsequent Input:** When the user provides text input *without* an image in a follow-up turn, treat it as a refinement or additional requirement for the *previously identified product and traits*. Update the traits and generate a *new* Amazon.in search URL based on the *updated* traits and the (potentially updated) item name.
-3.  **Output Format:** You *must* output only a single JSON object in the following exact format. Do not include any other text, explanation, or formatting outside this JSON object. Ensure the JSON is valid and parseable:
+3.  **Output Format:** You *must* output only a single JSON object in the following exact format. Do not include any other text, explanation, or formatting outside this JSON object. Ensure the JSON is valid and parseable. **Crucially, do not use any markdown formatting (like backticks) within the JSON values.**
     ```json
     {
     "itemname": "Identified product name (e.g., Men's Jeans)",
@@ -169,8 +181,10 @@ def recommend_product():
 
     # --- Context Management ---
     # Retrieve history from session. Default to empty list if no history exists.
-    # Flask session stores data as serializable Python objects (usually pickled by default)
-    # The AI history objects (Content) should be pickle-able.
+    # Note: The history we stored is a simplified version that doesn't contain
+    # the full Content objects that the SDK expects. This is fine for our use case
+    # since we're just using it to initialize a new chat session, and the SDK
+    # will handle reconstructing the proper objects.
     history = session.get('chat_history', [])
     print(f"Retrieved session history with {len(history)} turns.")
 
@@ -218,17 +232,44 @@ def recommend_product():
         # automatically includes the historical turns before sending.
         response = chat.send_message(content_parts)
         print("Received response from AI.")
-
+    
         # --- Update Context ---
         # Store the *updated* chat history (including the current turn and AI's response)
         # back into the session for the next request.
-        session['chat_history'] = chat.history
+        # PROBLEM: chat.history contains Content objects that aren't JSON serializable
+        # SOLUTION: Store only the text parts of the conversation
+        
+        # Extract serializable history (just the text parts)
+        serializable_history = []
+        for turn in chat.history:
+            # Each turn has a 'parts' list with the content
+            # We'll extract just the text parts for storage
+            parts_text = []
+            for part in turn.parts:
+                # If it's a text part, add it directly
+                if isinstance(part, str):
+                    parts_text.append(part)
+                # If it's an image part, just note that an image was here
+                elif isinstance(part, dict) and part.get('mime_type', '').startswith('image/'):
+                    parts_text.append("[IMAGE]")
+            
+            # Store the role and text parts for this turn
+            serializable_history.append({
+                "role": turn.role,
+                "parts": parts_text
+            })
+        
+        # Store the serializable history in the session
+        session['chat_history'] = serializable_history
         print(f"Session history updated. Current length: {len(session['chat_history'])}")
-
+    
         # --- Process AI Response ---
         # The AI is instructed to return ONLY JSON. Extract and parse it.
-        response_text = response.text.strip() # Remove leading/trailing whitespace
+        response_text = response.text.strip() 
+        response_text = clean_json_string(response_text)
         print(f"Raw AI response text: {response_text}")
+        
+        print(type(response_text))
 
         # Attempt to parse the response text as JSON
         try:

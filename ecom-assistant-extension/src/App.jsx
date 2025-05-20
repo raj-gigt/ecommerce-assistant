@@ -67,6 +67,7 @@ function App() {
       });
 
       const result = await response.json();
+      console.log("Response status:", response);
 
       setChatHistory((prevHistory) => {
         const newHistory = [...prevHistory];
