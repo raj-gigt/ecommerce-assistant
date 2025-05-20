@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon Product Recommender (Vite)",
+  "version": "1.0",
+  "description": "Get Amazon.in recommendations based on images and text (Vite build).",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1:3000/*"],
+  "action": {
+    "default_popup": "index.html"
+  },
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  }
+}
